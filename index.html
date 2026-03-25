@@ -35,6 +35,15 @@
     .header h1 { font-size: 1.6rem; font-weight: 700; }
     .header .stats { font-size: 0.85rem; margin-top: 6px; opacity: 0.85; }
 
+    .db-badge {
+      display: inline-block;
+      font-size: 0.72rem;
+      background: rgba(255,255,255,0.2);
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-top: 6px;
+    }
+
     .input-area {
       display: flex;
       gap: 8px;
@@ -52,6 +61,7 @@
     }
 
     .input-area input:focus { border-color: #4f8ef7; }
+    .input-area input:disabled { background: #f8fafc; }
 
     .input-area button {
       padding: 12px 18px;
@@ -64,8 +74,9 @@
       transition: background 0.2s, transform 0.1s;
     }
 
-    .input-area button:hover { background: #3a7ae0; }
-    .input-area button:active { transform: scale(0.95); }
+    .input-area button:hover:not(:disabled) { background: #3a7ae0; }
+    .input-area button:active:not(:disabled) { transform: scale(0.95); }
+    .input-area button:disabled { background: #94a3b8; cursor: not-allowed; }
 
     .filter-bar {
       display: flex;
@@ -137,15 +148,6 @@
       color: #94a3b8;
     }
 
-    .item-count {
-      font-size: 0.78rem;
-      color: #94a3b8;
-      background: #f1f5f9;
-      padding: 2px 8px;
-      border-radius: 12px;
-      flex-shrink: 0;
-    }
-
     .del-btn {
       background: none;
       border: none;
@@ -191,21 +193,58 @@
       transition: background 0.2s;
     }
 
-    .clear-btn:hover { background: #fef2f2; }
+    .clear-btn:hover:not(:disabled) { background: #fef2f2; }
     .clear-btn:disabled { color: #cbd5e1; cursor: default; }
-    .clear-btn:disabled:hover { background: none; }
+
+    .loading-overlay {
+      position: fixed; inset: 0;
+      background: rgba(255,255,255,0.85);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 100;
+      font-size: 0.95rem; color: #64748b; gap: 12px;
+    }
+
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid #e2e8f0;
+      border-top-color: #4f8ef7;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1e293b; color: #fff;
+      padding: 10px 20px; border-radius: 10px;
+      font-size: 0.85rem; opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none; z-index: 200;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; }
+    .toast.error { background: #ef4444; }
   </style>
 </head>
 <body>
+
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <span>Supabase 연결 중...</span>
+</div>
+
 <div class="card">
   <div class="header">
     <h1>🛒 쇼핑 리스트</h1>
     <div class="stats" id="stats">항목 0개 · 완료 0개</div>
+    <div class="db-badge">☁️ Supabase DB 연동</div>
   </div>
 
   <div class="input-area">
-    <input id="itemInput" type="text" placeholder="구매할 항목을 입력하세요..." maxlength="60" />
-    <button id="addBtn" title="추가">＋</button>
+    <input id="itemInput" type="text" placeholder="구매할 항목을 입력하세요..." maxlength="60" disabled />
+    <button id="addBtn" disabled>＋</button>
   </div>
 
   <div class="filter-bar">
@@ -218,39 +257,52 @@
 
   <div class="footer">
     <span id="footerInfo"></span>
-    <button class="clear-btn" id="clearDone">완료 항목 삭제</button>
+    <button class="clear-btn" id="clearDone" disabled>완료 항목 삭제</button>
   </div>
 </div>
 
-<script>
-  let items = JSON.parse(localStorage.getItem('shoppingList') || '[]');
+<div class="toast" id="toast"></div>
+
+<script type="module">
+  import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+  // ── Supabase 설정 ──────────────────────────────────
+  const SUPABASE_URL  = 'https://sayjexiodicrqskfycww.supabase.co';
+  const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNheWpleGlvZGljcnFza2Z5Y3d3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0MTMyNjksImV4cCI6MjA4OTk4OTI2OX0.aKYFPuaM7s1qLhKdGjI-OSjALqavdzaXKfOEo5umIuI';
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
+  // ──────────────────────────────────────────────────
+
+  let items  = [];
   let filter = 'all';
-  let idCounter = items.length ? Math.max(...items.map(i => i.id)) + 1 : 1;
 
-  const input    = document.getElementById('itemInput');
-  const addBtn   = document.getElementById('addBtn');
-  const listEl   = document.getElementById('list');
-  const stats    = document.getElementById('stats');
-  const footerInfo = document.getElementById('footerInfo');
+  const inputEl      = document.getElementById('itemInput');
+  const addBtn       = document.getElementById('addBtn');
+  const listEl       = document.getElementById('list');
+  const statsEl      = document.getElementById('stats');
+  const footerInfo   = document.getElementById('footerInfo');
   const clearDoneBtn = document.getElementById('clearDone');
+  const overlay      = document.getElementById('loadingOverlay');
+  const toastEl      = document.getElementById('toast');
 
-  function save() {
-    localStorage.setItem('shoppingList', JSON.stringify(items));
+  function showToast(msg, isError = false) {
+    toastEl.textContent = msg;
+    toastEl.className = 'toast show' + (isError ? ' error' : '');
+    setTimeout(() => toastEl.className = 'toast', 2500);
   }
 
   function getFiltered() {
     if (filter === 'todo') return items.filter(i => !i.done);
-    if (filter === 'done') return items.filter(i => i.done);
+    if (filter === 'done') return items.filter(i =>  i.done);
     return items;
   }
 
   function render() {
-    const filtered = getFiltered();
+    const filtered  = getFiltered();
     const doneCount = items.filter(i => i.done).length;
 
-    stats.textContent = `항목 ${items.length}개 · 완료 ${doneCount}개`;
+    statsEl.textContent    = `항목 ${items.length}개 · 완료 ${doneCount}개`;
     footerInfo.textContent = `${filtered.length}개 표시 중`;
-    clearDoneBtn.disabled = doneCount === 0;
+    clearDoneBtn.disabled  = doneCount === 0;
 
     listEl.innerHTML = '';
 
@@ -263,58 +315,107 @@
       return;
     }
 
-    filtered.forEach((item, idx) => {
+    filtered.forEach(item => {
       const li = document.createElement('li');
       li.className = 'item' + (item.done ? ' done' : '');
-      li.dataset.id = item.id;
-
       li.innerHTML = `
         <input type="checkbox" ${item.done ? 'checked' : ''} aria-label="완료 체크" />
         <span class="item-text">${escapeHtml(item.text)}</span>
-        <span class="item-count">${items.indexOf(item) + 1}</span>
         <button class="del-btn" title="삭제">🗑</button>
       `;
-
-      li.querySelector('input[type="checkbox"]').addEventListener('change', () => toggle(item.id));
+      li.querySelector('input[type="checkbox"]').addEventListener('change', () => toggle(item));
       li.querySelector('.del-btn').addEventListener('click', () => remove(item.id));
-
       listEl.appendChild(li);
     });
-  }
-
-  function add() {
-    const text = input.value.trim();
-    if (!text) { input.focus(); return; }
-    items.unshift({ id: idCounter++, text, done: false });
-    input.value = '';
-    input.focus();
-    save();
-    render();
-  }
-
-  function toggle(id) {
-    const item = items.find(i => i.id === id);
-    if (item) { item.done = !item.done; save(); render(); }
-  }
-
-  function remove(id) {
-    items = items.filter(i => i.id !== id);
-    save();
-    render();
-  }
-
-  function clearDone() {
-    items = items.filter(i => !i.done);
-    save();
-    render();
   }
 
   function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  async function loadItems() {
+    const { data, error } = await supabase
+      .from('shopping_items')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) { showToast('데이터 로드 실패: ' + error.message, true); return; }
+    items = data;
+    render();
+  }
+
+  async function add() {
+    const text = inputEl.value.trim();
+    if (!text) { inputEl.focus(); return; }
+
+    inputEl.disabled = true;
+    addBtn.disabled  = true;
+
+    const { data, error } = await supabase
+      .from('shopping_items')
+      .insert([{ text, done: false }])
+      .select()
+      .single();
+
+    inputEl.disabled = false;
+    addBtn.disabled  = false;
+    inputEl.value    = '';
+    inputEl.focus();
+
+    if (error) { showToast('추가 실패: ' + error.message, true); return; }
+    items.unshift(data);
+    render();
+    showToast('추가되었습니다 ✅');
+  }
+
+  async function toggle(item) {
+    const { error } = await supabase
+      .from('shopping_items')
+      .update({ done: !item.done })
+      .eq('id', item.id);
+
+    if (error) { showToast('업데이트 실패', true); render(); return; }
+    item.done = !item.done;
+    render();
+  }
+
+  async function remove(id) {
+    const { error } = await supabase
+      .from('shopping_items')
+      .delete()
+      .eq('id', id);
+
+    if (error) { showToast('삭제 실패', true); return; }
+    items = items.filter(i => i.id !== id);
+    render();
+    showToast('삭제되었습니다');
+  }
+
+  async function clearDone() {
+    const doneIds = items.filter(i => i.done).map(i => i.id);
+    if (!doneIds.length) return;
+
+    const { error } = await supabase
+      .from('shopping_items')
+      .delete()
+      .in('id', doneIds);
+
+    if (error) { showToast('일괄 삭제 실패', true); return; }
+    items = items.filter(i => !i.done);
+    render();
+    showToast(`완료 항목 ${doneIds.length}개 삭제됨`);
+  }
+
+  // 실시간 구독 - 다른 탭/기기 변경사항 즉시 반영
+  supabase
+    .channel('shopping_items_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_items' }, () => {
+      loadItems();
+    })
+    .subscribe();
+
   addBtn.addEventListener('click', add);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+  inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
   clearDoneBtn.addEventListener('click', clearDone);
 
   document.querySelector('.filter-bar').addEventListener('click', e => {
@@ -325,7 +426,12 @@
     render();
   });
 
-  render();
+  (async () => {
+    await loadItems();
+    overlay.style.display = 'none';
+    inputEl.disabled = false;
+    addBtn.disabled  = false;
+  })();
 </script>
 </body>
 </html>
